@@ -49,10 +49,20 @@ func (c *Client) Status(ctx context.Context) (bool, string) {
 	return false, c.Name + " is not on the server; run: ollama pull " + c.Name
 }
 
-// Usage is what one call cost.
+// Usage is what one call cost, as the model server measured it: reading the prompt (prefill) sets the time to
+// the first token, writing the reply (decode) the time per token after it.
 type Usage struct {
 	PromptTokens, ReplyTokens int
-	Took                      time.Duration
+	Took                      time.Duration // the whole call, as Codist saw it
+	Prefill, Decode, Load     time.Duration // as the server measured them; zero when it does not say
+}
+
+// DecodeRate is reply tokens per second, or 0 when unknown.
+func (u Usage) DecodeRate() float64 {
+	if u.Decode <= 0 {
+		return 0
+	}
+	return float64(u.ReplyTokens) / u.Decode.Seconds()
 }
 
 // ChatJSON sends a system and user message and decodes the JSON reply into out. schema, when
@@ -87,13 +97,17 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
-		PromptEvalCount int `json:"prompt_eval_count"`
-		EvalCount       int `json:"eval_count"`
+		PromptEvalCount    int   `json:"prompt_eval_count"`
+		EvalCount          int   `json:"eval_count"`
+		PromptEvalDuration int64 `json:"prompt_eval_duration"` // nanoseconds
+		EvalDuration       int64 `json:"eval_duration"`
+		LoadDuration       int64 `json:"load_duration"`
 	}
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return Usage{}, fmt.Errorf("model server reply: %w", err)
 	}
-	u := Usage{PromptTokens: reply.PromptEvalCount, ReplyTokens: reply.EvalCount, Took: time.Since(start)}
+	u := Usage{PromptTokens: reply.PromptEvalCount, ReplyTokens: reply.EvalCount, Took: time.Since(start),
+		Prefill: time.Duration(reply.PromptEvalDuration), Decode: time.Duration(reply.EvalDuration), Load: time.Duration(reply.LoadDuration)}
 	if err := json.Unmarshal([]byte(reply.Message.Content), out); err != nil {
 		return u, fmt.Errorf("the model did not return valid JSON: %.200s", reply.Message.Content)
 	}

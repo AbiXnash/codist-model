@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func server(t *testing.T, h http.HandlerFunc) *Client {
@@ -59,12 +60,12 @@ func TestChatJSON(t *testing.T) {
 			t.Errorf("%s %s", r.Method, r.URL.Path)
 		}
 		json.NewDecoder(r.Body).Decode(&got)
-		io.WriteString(w, `{"message":{"content":"{\"answer\":42}"},"prompt_eval_count":100,"eval_count":7}`)
+		io.WriteString(w, `{"message":{"content":"{\"answer\":42}"},"prompt_eval_count":100,"eval_count":7,"prompt_eval_duration":2000000000,"eval_duration":500000000,"load_duration":1000}`)
 	})
 	var out struct{ Answer int }
 	schema := map[string]any{"type": "object"}
 	u, err := cl.ChatJSON(context.Background(), "sys", "user", schema, &out)
-	if err != nil || out.Answer != 42 || u.PromptTokens != 100 || u.ReplyTokens != 7 {
+	if err != nil || out.Answer != 42 || u.PromptTokens != 100 || u.ReplyTokens != 7 || u.Prefill != 2*time.Second || u.DecodeRate() != 14 {
 		t.Fatalf("%v %+v %+v", err, out, u)
 	}
 	if got["model"] != "coder:7b" || got["stream"] != false || got["format"].(map[string]any)["type"] != "object" {
@@ -110,5 +111,11 @@ func TestChatJSONErrors(t *testing.T) {
 	}
 	if _, err := New("http://bad host", "m", 1).ChatJSON(context.Background(), "s", "u", nil, &out); err == nil {
 		t.Error("a bad address should fail")
+	}
+}
+
+func TestDecodeRateUnknown(t *testing.T) {
+	if (Usage{ReplyTokens: 5}).DecodeRate() != 0 {
+		t.Error("no decode time, no rate")
 	}
 }
