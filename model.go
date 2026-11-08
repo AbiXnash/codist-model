@@ -32,6 +32,7 @@ func (c *Client) Status(ctx context.Context) (bool, string) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		logger().Debug("model server not reachable", "url", c.URL, "err", err)
 		return false, "no model server at " + c.URL + "; start Ollama or set model.url in .codist/config.lua"
 	}
 	defer resp.Body.Close()
@@ -39,6 +40,7 @@ func (c *Client) Status(ctx context.Context) (bool, string) {
 		Models []struct{ Name string } `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		logger().Warn("model server answered unlike Ollama", "url", c.URL, "status", resp.Status, "err", err)
 		return false, "the server at " + c.URL + " did not answer like Ollama"
 	}
 	for _, m := range tags.Models {
@@ -46,6 +48,7 @@ func (c *Client) Status(ctx context.Context) (bool, string) {
 			return true, "ready"
 		}
 	}
+	logger().Debug("model not on server", "url", c.URL, "model", c.Name, "models", len(tags.Models))
 	return false, c.Name + " is not on the server; run: ollama pull " + c.Name
 }
 
@@ -79,6 +82,7 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 		"messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
 	})
 	start := time.Now()
+	logger().Debug("model call", "model", c.Name, "system_chars", len(system), "user_chars", len(user), "schema", schema != nil)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return Usage{}, err
@@ -86,11 +90,16 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		logger().Warn("model call failed", "model", c.Name, "took", time.Since(start), "err", err)
 		return Usage{}, fmt.Errorf("model server: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger().Warn("model reply cut short", "model", c.Name, "bytes", len(raw), "err", err)
+	}
 	if resp.StatusCode != http.StatusOK {
+		logger().Warn("model server refused", "model", c.Name, "status", resp.Status, "body", fmt.Sprintf("%.300s", raw))
 		return Usage{}, fmt.Errorf("model server said %s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 	var reply struct {
@@ -104,11 +113,15 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 		LoadDuration       int64 `json:"load_duration"`
 	}
 	if err := json.Unmarshal(raw, &reply); err != nil {
+		logger().Warn("model server reply unreadable", "model", c.Name, "err", err, "body", fmt.Sprintf("%.300s", raw))
 		return Usage{}, fmt.Errorf("model server reply: %w", err)
 	}
 	u := Usage{PromptTokens: reply.PromptEvalCount, ReplyTokens: reply.EvalCount, Took: time.Since(start),
 		Prefill: time.Duration(reply.PromptEvalDuration), Decode: time.Duration(reply.EvalDuration), Load: time.Duration(reply.LoadDuration)}
+	logger().Debug("model replied", "model", c.Name, "prompt_tokens", u.PromptTokens, "reply_tokens", u.ReplyTokens,
+		"took", u.Took.Round(time.Millisecond), "prefill", u.Prefill.Round(time.Millisecond), "tok_per_s", int(u.DecodeRate()))
 	if err := json.Unmarshal([]byte(reply.Message.Content), out); err != nil {
+		logger().Warn("model reply not JSON", "model", c.Name, "reply", fmt.Sprintf("%.300s", reply.Message.Content))
 		return u, fmt.Errorf("the model did not return valid JSON: %.200s", reply.Message.Content)
 	}
 	return u, nil

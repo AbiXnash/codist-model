@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path"
 	"sort"
 	"strconv"
@@ -202,6 +203,7 @@ func Read(id, title string, created time.Time, logs string, code Code) Analysis 
 		a.Locations = append(a.Locations, *places[k])
 	}
 	a.Suspects = suspects(a.Locations, code)
+	slog.Info("incident read", "lib", "model", "id", id, "log_bytes", len(logs), "errors", len(a.Errors), "locations", len(a.Locations), "suspects", len(a.Suspects))
 	return a
 }
 
@@ -336,6 +338,7 @@ func Explain(ctx context.Context, a *Analysis, logs string, m *model.Client) {
 	}
 	a.Model = m.Name
 	if _, err := m.ChatJSON(ctx, causeSystem, b.String(), causeSchema, &out); err != nil {
+		slog.Warn("incident not explained", "lib", "model", "id", a.ID, "err", err)
 		a.Status, a.Error = "failed", err.Error()
 		return
 	}
@@ -355,6 +358,9 @@ func Explain(ctx context.Context, a *Analysis, logs string, m *model.Client) {
 				dropped++
 			}
 		}
+		if dropped > 0 {
+			slog.Info("model evidence dropped", "lib", "model", "id", a.ID, "cause", c.Title, "dropped", dropped, "kept", len(cause.Evidence))
+		}
 		if len(cause.Evidence) == 0 && len(c.Evidence) > 0 {
 			cause.Confidence = "low"
 			cause.Explanation += "\n\n(None of the model's quoted evidence is in the logs or the code, so treat this as a guess.)"
@@ -371,6 +377,7 @@ func Explain(ctx context.Context, a *Analysis, logs string, m *model.Client) {
 		a.Report.Fix = a.Causes[0].Fix
 	}
 	a.Status = "done"
+	slog.Info("incident explained", "lib", "model", "id", a.ID, "causes", len(a.Causes))
 }
 
 // Markdown is the incident as a report a person can paste into a ticket.
