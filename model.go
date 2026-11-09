@@ -82,25 +82,9 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 		"messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
 	})
 	start := time.Now()
-	logger().Debug("model call", "model", c.Name, "system_chars", len(system), "user_chars", len(user), "schema", schema != nil)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return Usage{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger().Warn("model call failed", "model", c.Name, "took", time.Since(start), "err", err)
-		return Usage{}, fmt.Errorf("model server: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger().Warn("model reply cut short", "model", c.Name, "bytes", len(raw), "err", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		logger().Warn("model server refused", "model", c.Name, "status", resp.Status, "body", fmt.Sprintf("%.300s", raw))
-		return Usage{}, fmt.Errorf("model server said %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	call := Call{ID: nextID(), Label: LabelOf(ctx), Model: c.Name, System: system, User: user, Start: start}
+	if Observer != nil {
+		Observer(call)
 	}
 	var reply struct {
 		Message struct {
@@ -112,17 +96,53 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string, schema any, 
 		EvalDuration       int64 `json:"eval_duration"`
 		LoadDuration       int64 `json:"load_duration"`
 	}
-	if err := json.Unmarshal(raw, &reply); err != nil {
-		logger().Warn("model server reply unreadable", "model", c.Name, "err", err, "body", fmt.Sprintf("%.300s", raw))
-		return Usage{}, fmt.Errorf("model server reply: %w", err)
+	var u Usage
+	var err error
+	defer func() {
+		if Observer != nil {
+			call.Done, call.Reply, call.Usage = true, reply.Message.Content, u
+			call.Usage.Took = time.Since(start)
+			if err != nil {
+				call.Err = err.Error()
+			}
+			Observer(call)
+		}
+	}()
+	logger().Debug("model call", "model", c.Name, "system_chars", len(system), "user_chars", len(user), "schema", schema != nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return Usage{}, err
 	}
-	u := Usage{PromptTokens: reply.PromptEvalCount, ReplyTokens: reply.EvalCount, Took: time.Since(start),
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		logger().Warn("model call failed", "model", c.Name, "took", time.Since(start), "err", err)
+		err = fmt.Errorf("model server: %w", err)
+		return Usage{}, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger().Warn("model reply cut short", "model", c.Name, "bytes", len(raw), "err", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		logger().Warn("model server refused", "model", c.Name, "status", resp.Status, "body", fmt.Sprintf("%.300s", raw))
+		err = fmt.Errorf("model server said %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return Usage{}, err
+	}
+	if err = json.Unmarshal(raw, &reply); err != nil {
+		logger().Warn("model server reply unreadable", "model", c.Name, "err", err, "body", fmt.Sprintf("%.300s", raw))
+		err = fmt.Errorf("model server reply: %w", err)
+		return Usage{}, err
+	}
+	u = Usage{PromptTokens: reply.PromptEvalCount, ReplyTokens: reply.EvalCount, Took: time.Since(start),
 		Prefill: time.Duration(reply.PromptEvalDuration), Decode: time.Duration(reply.EvalDuration), Load: time.Duration(reply.LoadDuration)}
 	logger().Debug("model replied", "model", c.Name, "prompt_tokens", u.PromptTokens, "reply_tokens", u.ReplyTokens,
 		"took", u.Took.Round(time.Millisecond), "prefill", u.Prefill.Round(time.Millisecond), "tok_per_s", int(u.DecodeRate()))
-	if err := json.Unmarshal([]byte(reply.Message.Content), out); err != nil {
+	if jerr := json.Unmarshal([]byte(reply.Message.Content), out); jerr != nil {
 		logger().Warn("model reply not JSON", "model", c.Name, "reply", fmt.Sprintf("%.300s", reply.Message.Content))
-		return u, fmt.Errorf("the model did not return valid JSON: %.200s", reply.Message.Content)
+		err = fmt.Errorf("the model did not return valid JSON: %.200s", reply.Message.Content)
+		return u, err
 	}
 	return u, nil
 }

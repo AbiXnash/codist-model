@@ -119,3 +119,29 @@ func TestDecodeRateUnknown(t *testing.T) {
 		t.Error("no decode time, no rate")
 	}
 }
+
+func TestObserverSeesEveryCall(t *testing.T) {
+	var seen []Call
+	Observer = func(c Call) { seen = append(seen, c) }
+	defer func() { Observer = nil }()
+	cl := server(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"message":{"content":"{\"answer\":1}"},"prompt_eval_count":9,"eval_count":3}`)
+	})
+	var out struct{ Answer int }
+	ctx := WithLabel(context.Background(), Label{Kind: "review", Title: "Review A.java", SHA: "abc"})
+	if _, err := cl.ChatJSON(ctx, "sys", "user text", nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0].Done || !seen[1].Done || seen[0].ID != seen[1].ID {
+		t.Fatalf("a start and an end for the same call: %+v", seen)
+	}
+	end := seen[1]
+	if end.Label.Kind != "review" || end.User != "user text" || end.Reply != `{"answer":1}` || end.Usage.PromptTokens != 9 || end.Err != "" {
+		t.Fatalf("end: %+v", end)
+	}
+	bad := server(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
+	seen = nil
+	if _, err := bad.ChatJSON(context.Background(), "s", "u", nil, &out); err == nil || len(seen) != 2 || seen[1].Err == "" {
+		t.Fatalf("a failed call reports its error: %v %+v", err, seen)
+	}
+}
