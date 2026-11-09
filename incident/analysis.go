@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	model "github.com/AbiXnash/codist-model"
+	model "github.com/abxengg/codist-model"
 )
 
 // Code is what an analysis needs to know about the project, supplied by the caller so this package depends on

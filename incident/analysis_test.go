@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	model "github.com/AbiXnash/codist-model"
+	model "github.com/abxengg/codist-model"
 )
 
 // shop is a fake project: OrderService.java, last changed by commit "c2" at line 31.
